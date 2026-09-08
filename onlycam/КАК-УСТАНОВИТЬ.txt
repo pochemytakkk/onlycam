@@ -1,0 +1,16 @@
+# OnlyCam — установка без Mac (Windows + iPhone)
+
+1. Создай аккаунт на https://github.com (если ещё нет).
+2. Установи GitHub Desktop: https://desktop.github.com
+3. File → Add local repository → папка onlycam → Publish repository (можно Private).
+4. На github.com открой репозиторий → вкладка Actions → "Build iPhone IPA" → Run workflow.
+5. Подожди 5–15 минут → зелёная галочка → Artifacts → скачай OnlyCam.zip → внутри OnlyCam.ipa
+
+6. Скачай Sideloadly: https://sideloadly.io
+7. Microsoft Store → приложение "Apple Devices" (Windows 11) или iTunes (Windows 10).
+8. На iPhone: Настройки → Конфиденциальность и безопасность → Режим разработчика → Вкл → перезагрузка.
+9. Кабель USB-C: iPhone ↔ ПК, нажми «Доверять», введи код.
+10. Открой Sideloadly: IPA = OnlyCam.ipa, Apple ID = твой iCloud, Start.
+11. На iPhone: Настройки → Основные → VPN и управление устройством → доверь свой Apple ID.
+12. Открой OnlyCam, разреши Камеру и Локальную сеть, выбери Ultra Wide.
+13. На ПК: папка windows → run.ps1 -Url "http://IP_С_ЭКРАНА_ТЕЛЕФОНА:8080/stream"
