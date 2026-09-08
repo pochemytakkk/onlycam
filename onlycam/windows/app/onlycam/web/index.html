@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OnlyCam</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0d0f12; color: #f2f4f8; font: 15px/1.4 -apple-system, system-ui, sans-serif;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  header { padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: #d0463b; }
+  #dot.live { background: #34c759; }
+  #stage { position: relative; flex: 1; background: #000; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #stats { position: absolute; left: 12px; bottom: 12px; font-size: 12px; opacity: .8;
+           background: rgba(0,0,0,.5); padding: 6px 8px; border-radius: 8px; }
+  #panel { padding: 12px 16px 24px; display: grid; gap: 10px; background: #14171c; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row label { flex: 0 0 96px; font-size: 13px; opacity: .75; }
+  select, button { font: inherit; color: inherit; background: #232830; border: 1px solid #333a45;
+                   border-radius: 10px; padding: 9px 12px; flex: 1; }
+  button.primary { background: #2f6fed; border-color: #2f6fed; font-weight: 600; }
+  #error { color: #ff8a80; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<header><span id="dot"></span><h1>OnlyCam</h1></header>
+
+<div id="stage">
+  <video id="preview" playsinline autoplay muted></video>
+  <div id="stats">не подключено</div>
+</div>
+
+<div id="panel">
+  <div class="row"><label for="camera">Камера</label><select id="camera"></select></div>
+  <div class="row"><label for="quality">Качество</label>
+    <select id="quality">
+      <option value="1920x1080">1080p</option>
+      <option value="1280x720" selected>720p</option>
+      <option value="640x480">480p</option>
+    </select>
+  </div>
+  <div class="row"><label for="fps">Кадры/с</label>
+    <select id="fps">
+      <option value="30" selected>30</option>
+      <option value="24">24</option>
+      <option value="15">15</option>
+    </select>
+  </div>
+  <div class="row"><button id="toggle" class="primary">Начать трансляцию</button></div>
+  <div id="error"></div>
+</div>
+
+<canvas id="scratch" hidden></canvas>
+<script>
+const els = {
+  dot: document.getElementById('dot'),
+  video: document.getElementById('preview'),
+  stats: document.getElementById('stats'),
+  camera: document.getElementById('camera'),
+  quality: document.getElementById('quality'),
+  fps: document.getElementById('fps'),
+  toggle: document.getElementById('toggle'),
+  error: document.getElementById('error'),
+  canvas: document.getElementById('scratch'),
+};
+
+let stream = null;
+let socket = null;
+let timer = null;
+let wakeLock = null;
+let sent = 0;
+let streaming = false;
+
+function setError(message) { els.error.textContent = message || ''; }
+
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cameras = devices.filter(device => device.kind === 'videoinput');
+  els.camera.innerHTML = '';
+  cameras.forEach((device, index) => {
+    const option = document.createElement('option');
+    option.value = device.deviceId;
+    option.textContent = device.label || `Камера ${index + 1}`;
+    els.camera.appendChild(option);
+  });
+}
+
+async function openCamera() {
+  const [width, height] = els.quality.value.split('x').map(Number);
+  const deviceId = els.camera.value;
+  const constraints = {
+    audio: false,
+    video: {
+      width: { ideal: width },
+      height: { ideal: height },
+      frameRate: { ideal: Number(els.fps.value) },
+      ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' }),
+    },
+  };
+  if (stream) { stream.getTracks().forEach(track => track.stop()); }
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  els.video.srcObject = stream;
+  await listCameras();
+}
+
+function connect() {
+  return new Promise((resolve, reject) => {
+    socket = new WebSocket(`wss://${location.host}/ws`);
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => resolve();
+    socket.onerror = () => reject(new Error('WebSocket не открылся'));
+    socket.onclose = () => { if (streaming) { stopStreaming('Соединение закрыто'); } };
+  });
+}
+
+function captureLoop() {
+  const track = stream.getVideoTracks()[0];
+  const settings = track.getSettings();
+  els.canvas.width = settings.width || 1280;
+  els.canvas.height = settings.height || 720;
+  const context = els.canvas.getContext('2d', { alpha: false });
+  const interval = 1000 / Number(els.fps.value);
+
+  timer = setInterval(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) { return; }
+    if (socket.bufferedAmount > 2 * 1024 * 1024) { return; }  // drop frames when the link lags
+    context.drawImage(els.video, 0, 0, els.canvas.width, els.canvas.height);
+    els.canvas.toBlob(async blob => {
+      if (!blob || !socket || socket.readyState !== WebSocket.OPEN) { return; }
+      socket.send(await blob.arrayBuffer());
+      sent += 1;
+    }, 'image/jpeg', 0.7);
+  }, interval);
+}
+
+async function startStreaming() {
+  setError('');
+  try {
+    await openCamera();
+    await connect();
+    captureLoop();
+    streaming = true;
+    els.dot.classList.add('live');
+    els.toggle.textContent = 'Остановить';
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+  } catch (error) {
+    setError(error.message);
+    stopStreaming();
+  }
+}
+
+function stopStreaming(message) {
+  streaming = false;
+  clearInterval(timer); timer = null;
+  if (socket) { socket.close(); socket = null; }
+  if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  els.dot.classList.remove('live');
+  els.toggle.textContent = 'Начать трансляцию';
+  els.stats.textContent = 'не подключено';
+  if (message) { setError(message); }
+}
+
+els.toggle.addEventListener('click', () => (streaming ? stopStreaming() : startStreaming()));
+[els.camera, els.quality, els.fps].forEach(control => control.addEventListener('change', () => {
+  if (streaming) { stopStreaming(); startStreaming(); }
+}));
+
+setInterval(() => {
+  if (!streaming) { return; }
+  els.stats.textContent = `${sent} кадр/с · ${els.canvas.width}x${els.canvas.height}`;
+  sent = 0;
+}, 1000);
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && streaming && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+  }
+});
+
+listCameras().catch(() => {});
+</script>
+</body>
+</html>

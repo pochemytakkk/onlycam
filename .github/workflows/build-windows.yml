@@ -1,0 +1,72 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+
+      - name: Install Python dependencies
+        working-directory: onlycam/windows/app
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint
+        working-directory: onlycam/windows/app
+        run: ruff check .
+
+      - name: Test
+        working-directory: onlycam/windows/app
+        run: pytest tests -q
+
+      - name: Build DirectShow filter (x64)
+        run: |
+          cmake -S onlycam/windows/filter -B build/x64 -A x64
+          cmake --build build/x64 --config Release
+
+      - name: Build DirectShow filter (x86)
+        run: |
+          cmake -S onlycam/windows/filter -B build/x86 -A Win32
+          cmake --build build/x86 --config Release
+
+      - name: Collect filter binaries
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/filter | Out-Null
+          Copy-Item build/x64/Release/OnlyCamFilter.dll dist/filter/OnlyCamFilter64.dll
+          Copy-Item build/x86/Release/OnlyCamFilter.dll dist/filter/OnlyCamFilter32.dll
+
+      - name: Build application executable
+        working-directory: onlycam/windows/app
+        run: pyinstaller --noconfirm --distpath ../../../dist --workpath ../../../build/pyinstaller onlycam.spec
+
+      - name: Bundle filter next to the executable
+        run: Copy-Item dist/filter -Destination dist/OnlyCam/filter -Recurse -Force
+
+      - name: Build installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" onlycam/windows/installer/onlycam.iss /O"${{ github.workspace }}\dist\installer"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnlyCam-Setup
+          path: dist/installer/OnlyCam-Setup.exe
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnlyCam-portable
+          path: dist/OnlyCam
